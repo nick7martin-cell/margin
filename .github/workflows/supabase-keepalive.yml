@@ -31,8 +31,8 @@ jobs:
             exit 1
           fi
 
-          url="${SUPABASE_URL%/}/rest/v1/settings?select=id&limit=1"
-          echo "Pinging ${SUPABASE_URL%/} ..."
+          url="${SUPABASE_URL%/}/auth/v1/health"
+          echo "Pinging ${url} ..."
 
           http_code="$(
             curl --silent --show-error --output /tmp/supabase-keepalive-body.txt --write-out '%{http_code}' \
