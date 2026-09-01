@@ -4,16 +4,19 @@ import {
   KeepAliveService,
 } from '@/services/database/keepAliveService'
 
-const { isLocalDevModeMock, isSupabaseConfiguredMock } = vi.hoisted(() => ({
-  isLocalDevModeMock: vi.fn(() => false),
-  isSupabaseConfiguredMock: vi.fn(() => true),
+const { getSupabaseClientMock, isLocalDevModeMock, isSupabaseConfiguredMock } = vi.hoisted(
+  () => ({
+    getSupabaseClientMock: vi.fn(),
+    isLocalDevModeMock: vi.fn(() => false),
+    isSupabaseConfiguredMock: vi.fn(() => true),
+  }),
+)
+
+vi.mock('@/lib/supabase/client', () => ({
+  getSupabaseClient: getSupabaseClientMock,
 }))
 
 vi.mock('@/lib/env', () => ({
-  env: {
-    supabaseUrl: 'https://example.supabase.co',
-    supabaseAnonKey: 'anon-key',
-  },
   isLocalDevMode: isLocalDevModeMock,
   isSupabaseConfigured: isSupabaseConfiguredMock,
 }))
@@ -28,13 +31,24 @@ vi.mock('@/lib/logger', () => ({
 
 describe('KeepAliveService', () => {
   let service: KeepAliveService
-  let fetchMock: ReturnType<typeof vi.fn>
+  let selectMock: ReturnType<typeof vi.fn>
+  let limitMock: ReturnType<typeof vi.fn>
+  let fromMock: ReturnType<typeof vi.fn>
+  let getSessionMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     vi.useFakeTimers()
     service = new KeepAliveService()
-    fetchMock = vi.fn().mockResolvedValue({ ok: true })
-    vi.stubGlobal('fetch', fetchMock)
+    selectMock = vi.fn()
+    limitMock = vi.fn()
+    fromMock = vi.fn(() => ({ select: selectMock }))
+    selectMock.mockReturnValue({ limit: limitMock })
+    limitMock.mockResolvedValue({ error: null })
+    getSessionMock = vi.fn().mockResolvedValue({ data: { session: { user: { id: 'user-1' } } } })
+    getSupabaseClientMock.mockReturnValue({
+      auth: { getSession: getSessionMock },
+      from: fromMock,
+    })
     isLocalDevModeMock.mockReturnValue(false)
     isSupabaseConfiguredMock.mockReturnValue(true)
   })
@@ -42,21 +56,30 @@ describe('KeepAliveService', () => {
   afterEach(() => {
     service.stop()
     vi.useRealTimers()
-    vi.unstubAllGlobals()
     vi.clearAllMocks()
   })
 
-  it('pings auth health on start and every 12 hours', async () => {
+  it('queries accounts on start and every 12 hours when signed in', async () => {
     service.start()
 
     await Promise.resolve()
-    expect(fetchMock).toHaveBeenCalledWith('https://example.supabase.co/auth/v1/health', {
-      headers: { apikey: 'anon-key' },
-    })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(getSessionMock).toHaveBeenCalled()
+    expect(fromMock).toHaveBeenCalledWith('accounts')
+    expect(selectMock).toHaveBeenCalledWith('id')
+    expect(limitMock).toHaveBeenCalledWith(1)
+    expect(fromMock).toHaveBeenCalledTimes(1)
 
     await vi.advanceTimersByTimeAsync(KEEP_ALIVE_INTERVAL_MS)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fromMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips the ping when there is no active session', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: null } })
+
+    service.start()
+    await Promise.resolve()
+
+    expect(fromMock).not.toHaveBeenCalled()
   })
 
   it('creates only one timer when start is called repeatedly', async () => {
@@ -65,7 +88,7 @@ describe('KeepAliveService', () => {
     service.start()
 
     await Promise.resolve()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fromMock).toHaveBeenCalledTimes(1)
     expect(service.isRunning()).toBe(true)
   })
 
@@ -75,21 +98,25 @@ describe('KeepAliveService', () => {
     service.start()
 
     expect(service.isRunning()).toBe(false)
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(getSupabaseClientMock).not.toHaveBeenCalled()
   })
 
   it('logs errors without throwing when the ping fails', async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 503 })
+    limitMock.mockResolvedValue({ error: { message: 'network down', code: 'PGRST001' } })
 
     service.start()
+    await Promise.resolve()
+    await Promise.resolve()
     await Promise.resolve()
 
     expect(keepAliveFailedMock).toHaveBeenCalledTimes(1)
     expect(service.isRunning()).toBe(true)
   })
 
-  it('logs errors without throwing when fetch throws', async () => {
-    fetchMock.mockRejectedValue(new Error('offline'))
+  it('logs errors without throwing when the client throws', async () => {
+    getSupabaseClientMock.mockImplementation(() => {
+      throw new Error('offline')
+    })
 
     service.start()
     await Promise.resolve()
@@ -106,6 +133,6 @@ describe('KeepAliveService', () => {
     expect(service.isRunning()).toBe(false)
 
     await vi.advanceTimersByTimeAsync(KEEP_ALIVE_INTERVAL_MS)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fromMock).toHaveBeenCalledTimes(1)
   })
 })

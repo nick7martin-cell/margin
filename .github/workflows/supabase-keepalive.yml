@@ -1,16 +1,16 @@
 # Pings Supabase daily so free-tier projects don't auto-pause after ~7 days idle.
-# The in-app KeepAliveService only runs while Margin is open in a browser tab.
+# Supabase counts *database* REST queries as activity — auth/health pings do NOT count.
 #
 # Setup (one time): GitHub repo → Settings → Secrets and variables → Actions
-#   SUPABASE_URL        — same value as VITE_SUPABASE_URL
-#   SUPABASE_ANON_KEY   — same value as VITE_SUPABASE_ANON_KEY
+#   SUPABASE_URL                 — same value as VITE_SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY    — Dashboard → Settings → API → service_role (secret)
 
 name: Supabase keep-alive
 
 on:
   schedule:
-    # Daily at 14:00 UTC (~9–10am US Central, depending on DST)
-    - cron: '0 14 * * *'
+    # Every 6 hours — well within Supabase's 7-day inactivity window
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -18,27 +18,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Ping Supabase REST API
+      - name: Ping Supabase database
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
 
-          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
-            echo "Missing SUPABASE_URL or SUPABASE_ANON_KEY repository secrets."
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+            echo "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY repository secrets."
             echo "Add them under Settings → Secrets and variables → Actions."
             exit 1
           fi
 
-          url="${SUPABASE_URL%/}/auth/v1/health"
+          url="${SUPABASE_URL%/}/rest/v1/accounts?select=id&limit=1"
           echo "Pinging ${url} ..."
 
           http_code="$(
             curl --silent --show-error --output /tmp/supabase-keepalive-body.txt --write-out '%{http_code}' \
               --max-time 30 \
-              --header "apikey: ${SUPABASE_ANON_KEY}" \
-              --header "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+              --header "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+              --header "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
               --header 'Accept: application/json' \
               "${url}"
           )"
@@ -47,7 +47,7 @@ jobs:
           echo "Response: $(head -c 200 /tmp/supabase-keepalive-body.txt)"
 
           if [ "${http_code}" != '200' ]; then
-            echo "Keep-alive ping failed. If the project is paused, resume it in the Supabase dashboard."
+            echo "Keep-alive ping failed. If the project is paused, resume it in the Supabase dashboard first."
             exit 1
           fi
 

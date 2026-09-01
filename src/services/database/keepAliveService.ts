@@ -1,8 +1,11 @@
-import { env, isLocalDevMode, isSupabaseConfigured } from '@/lib/env'
+import { isLocalDevMode, isSupabaseConfigured } from '@/lib/env'
 import { logger } from '@/lib/logger'
+import { getSupabaseClient } from '@/lib/supabase/client'
 
 /** Ping Supabase every 12 hours to prevent free-tier project pause. */
 export const KEEP_ALIVE_INTERVAL_MS = 12 * 60 * 60 * 1000
+
+const KEEP_ALIVE_TABLE = 'accounts'
 
 export class KeepAliveService {
   private timerId: ReturnType<typeof setInterval> | null = null
@@ -33,15 +36,18 @@ export class KeepAliveService {
 
   private async ping(): Promise<void> {
     try {
-      const url = `${env.supabaseUrl.replace(/\/$/, '')}/auth/v1/health`
-      const response = await fetch(url, {
-        headers: {
-          apikey: env.supabaseAnonKey,
-        },
-      })
+      const supabase = getSupabaseClient()
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
 
-      if (!response.ok) {
-        logger.keepAliveFailed(new Error(`Keep-alive ping failed: HTTP ${response.status}`))
+      // Supabase only counts database activity. Skip until the user is signed in.
+      if (!session) return
+
+      const { error } = await supabase.from(KEEP_ALIVE_TABLE).select('id').limit(1)
+
+      if (error) {
+        logger.keepAliveFailed(error)
       }
     } catch (error) {
       logger.keepAliveFailed(error)
